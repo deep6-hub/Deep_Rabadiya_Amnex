@@ -1,0 +1,39 @@
+conda create -n vh_gee python=3.11 -y
+
+conda activate vh_gee
+
+cd /d "D:\Deep\VH_GEE_Automation_GDRIVE"
+
+python -m pip install earthengine-api
+
+conda install -c conda-forge geopandas rasterio shapely pyproj -y
+
+pip install -r requirements.txt
+
+python -m uvicorn --version
+
+python -m pip install "starlette==0.48.0"
+
+earthengine authenticate
+
+python -m uvicorn app:app --host 127.0.0.1 --port 8000
+
+
+FOR GEE KEY MAKING,
+
+1.  https://console.cloud.google.com/welcome?project=gen-lang-client-0042669076
+2.  https://console.cloud.google.com/apis/library/earthengine.googleapis.com?project=gen-lang-client-0042669076
+3.  https://console.cloud.google.com/iam-admin/serviceaccounts/details/115820135832795490814/keys?project=gen-lang-client-0042669076
+
+
+12:32:30
+12:38:00
+
+
+
+"D:\Deep\Gujarat_LGD_Boundary_24-08-2026\Gujarat_LGD_Boundary_24-08-2026\Anand_Taluka_boundary.shp"
+
+"D:\Deep\Anand_Panchmahal_agrimask\update\updated_anand_agrimask_till_12_11_2025.tif"
+
+"F:\Deep\New folder\VH_GEE_Automation_GEE_DRIVE_LOCAL_REUSE_EXISTING_BAND_VALIDATED\output"
+

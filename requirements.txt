@@ -1,0 +1,13 @@
+fastapi
+starlette==0.48.0
+uvicorn
+jinja2
+pydantic
+earthengine-api
+geopandas
+rasterio
+shapely
+numpy
+requests
+pyproj
+google-auth

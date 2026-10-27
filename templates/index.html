@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Sentinel-1 VH → Direct GEE Download → Local</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+</head>
+<body>
+<div class="container">
+    <header class="hero">
+        <div class="hero-copy">
+            <div class="eyebrow"><span class="eyebrow-dot"></span> EARTH ENGINE · LOCAL PROCESSING</div>
+            <h1 id="pageTitle">Sentinel-1 VH Automation</h1>
+            <p class="subtitle">Preview acquisitions, build date mosaics, organize outputs, and generate a validated multiband stack.</p>
+        </div>
+        <div class="hero-badges">
+            <span class="hero-badge"><b>EPSG:32642</b><small>Output CRS</small></span>
+            <span class="hero-badge"><b>10 m</b><small>Target scale</small></span>
+        </div>
+    </header>
+    <div class="tabbar" role="tablist" aria-label="Satellite workflow">
+        <button type="button" id="tabS1" class="tab active" role="tab" aria-selected="true">Sentinel-1 (SAR)</button>
+        <button type="button" id="tabS2" class="tab" role="tab" aria-selected="false">Sentinel-2 (Optical)</button>
+        <button type="button" id="tabLocal" class="tab" role="tab" aria-selected="false">Local Processing</button>
+    </div>
+
+    <section class="credential-setup" id="credentialSetup" aria-label="Earth Engine credentials setup">
+        <div class="credential-copy">
+            <b>Google Earth Engine setup</b>
+            <p id="credentialMessage">Select your own service-account JSON key once on this PC. The app reads the project ID from the JSON and saves only the file path.</p>
+        </div>
+        <div class="credential-controls">
+            <input id="credentialPath" type="text" autocomplete="off" spellcheck="false" placeholder="C:\Users\you\keys\gee-service-account.json" aria-label="Service account JSON path">
+            <button type="button" class="secondary" id="saveCredentialPath">VALIDATE &amp; SAVE KEY PATH</button>
+        </div>
+        <small class="credential-note">Local Processing works without Earth Engine credentials. Keep the JSON key private; do not put it in a shared folder or ZIP.</small>
+    </section>
+
+    <div class="notice" id="workflowNotice">
+        <b>EPSG:32642 • 10 m • Whole-district export</b><br>
+        Each selected date is downloaded directly from Earth Engine in manageable GeoTIFF tiles.
+        Tiles are merged locally, then agriculture-masked and stacked. No Google Drive required.
+    </div>
+
+    <section id="localProcessingPanel" class="form-section local-processing-panel" hidden>
+        <div class="section-heading"><span class="step-number">01</span><div><h2>Local raster processing</h2><p>Process GeoTIFFs already downloaded to this PC. This tab does not call Google Earth Engine.</p></div></div>
+        <div class="settings-grid">
+            <div class="field field-wide"><label for="localInputFolder">Input folder containing downloaded GeoTIFFs</label><input id="localInputFolder" placeholder="F:\VH_GEE_Automation\output\Sentinel2_Optical"></div>
+            <div class="field field-wide"><label for="localOutputFolder">Output folder</label><input id="localOutputFolder" placeholder="F:\VH_GEE_Automation\processed"></div>
+            <div class="field field-wide"><label for="localMaskPath">Agriculture mask GeoTIFF (optional except for Mask operation)</label><input id="localMaskPath" placeholder="F:\data\agriculture_mask.tif"></div>
+            <div class="field"><label for="localOperation">Operation</label><select id="localOperation"><option value="stack">Stack selected images (ordered bands)</option><option value="mosaic">Mosaic selected images (spatial merge)</option><option value="mask">Apply agriculture mask to one image</option></select></div>
+            <div class="field"><label for="localOutputName">Output filename</label><input id="localOutputName" value="Local_Processed_Output.tif"></div>
+        </div>
+        <div class="crs-strip"><span class="crs-icon">⌖</span><div><b>Processing grid</b><small>Output CRS: EPSG:32642 · target pixel size: 10 m · nearest-neighbour alignment</small></div><span class="locked-pill">FIXED</span></div>
+        <div class="date-header local-toolbar"><h2>Available local GeoTIFFs</h2><div><label class="inline-check"><input type="checkbox" id="localRecursive"> Include subfolders</label><button type="button" id="scanLocalFiles" class="secondary">SCAN FOLDER</button><button type="button" id="selectLocalAll" class="small">SELECT ALL</button><button type="button" id="clearLocalAll" class="small">CLEAR ALL</button></div></div>
+        <div id="localFilesStatus" class="date-status">Enter an input folder and click SCAN FOLDER.</div>
+        <div id="localFilesList" class="dates local-files-list"></div>
+        <button type="button" id="runLocalProcessing" class="primary-action">RUN LOCAL PROCESSING</button>
+        <p class="hint">Stack: appends every selected input's bands in the numeric order below. Mosaic: merges images spatially and requires the same band count. Mask: select exactly one image and a mask; mask values greater than zero are treated as agriculture/valid pixels. Temporary work files are removed after the operation; source images are never deleted.</p>
+    </section>
+
+    <form id="jobForm">
+        <section class="form-section">
+        <div class="section-heading"><span class="step-number">01</span><div><h2>Study area &amp; output settings</h2><p>Choose the district, agriculture mask, and destination folder.</p></div></div>
+        <div class="settings-grid">
+        <div class="field field-wide"><label>District Shapefile / ZIP</label>
+        <input id="district_path" required placeholder="D:\data\district.shp or district.zip"></div>
+        <div class="field"><label>District Field</label><input id="district_field" value="district" required></div>
+        <div class="field"><label>District Name</label><input id="district_name" value="Anand" required></div>
+        <div class="field field-wide"><label>Agriculture Mask GeoTIFF</label><input id="mask_path" required placeholder="D:\data\agri_mask.tif"></div>
+        <div class="field field-wide"><label>Output Folder</label><input id="output_dir" required placeholder="D:\VH_Output"></div>
+        </div>
+
+        <div class="grid date-range-grid">
+            <div>
+                <label>Year</label>
+                <input id="year" type="number" value="2026" required>
+            </div>
+            <div>
+                <label>Start Month</label>
+                <select id="start_month"></select>
+            </div>
+            <div>
+                <label>End Month</label>
+                <select id="end_month"></select>
+            </div>
+        </div>
+
+        <div id="s1Options" class="sensor-settings">
+        <label>Polarization</label>
+        <select id="polarization">
+            <option value="VH" selected>VH</option>
+            <option value="VV">VV</option>
+        </select>
+
+        <label>Orbit</label>
+        <select id="orbit">
+            <option value="DESCENDING" selected>DESCENDING</option>
+            <option value="ASCENDING">ASCENDING</option>
+        </select>
+
+        </div>
+        <div id="s2Options" class="option-panel" hidden>
+            <label>Sentinel-2 Bands (select before loading dates)</label>
+            <div class="check-grid">
+                <label><input type="checkbox" class="band-check" value="B2" checked> B2 — Blue</label>
+                <label><input type="checkbox" class="band-check" value="B3" checked> B3 — Green</label>
+                <label><input type="checkbox" class="band-check" value="B4" checked> B4 — Red</label>
+                <label><input type="checkbox" class="band-check" value="B8" checked> B8 — NIR</label>
+                <label><input type="checkbox" class="band-check" value="B11"> B11 — SWIR 1</label>
+                <label><input type="checkbox" class="band-check" value="B12"> B12 — SWIR 2</label>
+            </div>
+            <label>Vegetation / Water Indices (select before loading dates)</label>
+            <div class="check-grid">
+                <label><input type="checkbox" class="index-check" value="NDVI"> NDVI</label>
+                <label><input type="checkbox" class="index-check" value="LSWI"> LSWI</label>
+                <label><input type="checkbox" class="index-check" value="SAVI"> SAVI</label>
+            </div>
+            <p class="hint">NDVI, LSWI and SAVI are calculated for every selected acquisition date. Indices are exported as floating-point values; source bands retain Sentinel-2 scaled values.</p>
+        </div>
+
+        <div class="crs-strip"><span class="crs-icon">⌖</span><div><b>Output projection locked</b><small>EPSG:32642 · UTM Zone 42N · 10 m target scale</small></div><span class="locked-pill">FIXED</span></div>
+        </section>
+
+        <section class="form-section acquisition-section">
+        <div class="section-heading"><span class="step-number">02</span><div><h2>Acquisition dates</h2><p>Load available dates from Earth Engine, then choose dates for preview or mosaicking.</p></div></div>
+        <div class="date-header">
+            <h2>Available Acquisition Dates</h2>
+            <div>
+                <button type="button" id="loadDates" class="secondary">LOAD DATES</button>
+                <button type="button" id="selectAll" class="small">SELECT ALL</button>
+                <button type="button" id="clearAll" class="small">CLEAR ALL</button>
+            </div>
+        </div>
+
+        <div id="dateStatus" class="date-status">
+            Click "LOAD DATES" to query Sentinel-1.
+        </div>
+        <div id="dates" class="dates"></div>
+        </section>
+
+        <section id="visualizationPanel" class="visualization-panel form-section">
+            <div class="date-header">
+                <h2 id="previewTitle">Sentinel-1 VH Preview</h2>
+                <div class="preview-controls">
+                    <select id="previewDate" aria-label="Date to preview"><option value="">Select a date</option></select>
+                    <select id="basemapChoice" aria-label="Basemap">
+                        <option value="imagery" selected>Esri World Imagery</option>
+                        <option value="osm">OpenStreetMap</option>
+                        <option value="topo">OpenTopoMap</option>
+                        <option value="carto">CartoDB Light</option>
+                    </select>
+                    <button type="button" id="showPreview" class="secondary">SHOW PREVIEW</button>
+                    <button type="button" id="showMosaic" class="secondary">MOSAIC SELECTED DATES</button>
+                </div>
+            </div>
+            <p class="hint" id="previewHint">Preview the Sentinel-1 VH backscatter band for a selected acquisition date. This does not change the download workflow.</p>
+            <div id="previewMap" role="application" aria-label="Satellite data map preview"></div>
+            <div id="previewStatus" class="date-status">Load dates and select one date for preview, or select two or more dates above and click MOSAIC SELECTED DATES.</div>
+        </section>
+
+        <section class="visualization-panel form-section" id="outputQueuePanel">
+            <div class="section-heading"><span class="step-number">03</span><div><h2>Output queue &amp; stacking order</h2><p>Choose the outputs to keep, assign numeric order, and build the final stack.</p></div><div class="queue-count" id="queueCount">0 outputs</div></div>
+            <div class="date-header"><h2>Previewed Dates &amp; Mosaics to Download</h2>
+                <div><button type="button" id="clearOutputQueue" class="small">CLEAR OUTPUT LIST</button></div>
+            </div>
+            <p class="hint">Show a single-date preview and add it, or create a mosaic and add it. Only checked items below will be downloaded.</p>
+            <div id="outputQueue" class="dates"></div>
+            <div id="outputQueueStatus" class="date-status">No outputs added yet.</div>
+        </section>
+
+        <button type="submit">DOWNLOAD CHECKED OUTPUTS TO THIS PC</button>
+    </form>
+
+    <section class="run-panel">
+        <div class="run-heading"><div><span class="step-number">04</span><h2>Run workflow</h2></div><p>Selected outputs are downloaded, validated, stacked in queue order, and temporary tiles are removed after successful validation.</p></div>
+        <div id="status" class="status"><span class="status-dot"></span> Ready</div>
+        <details class="log-details"><summary>Processing log <span>View progress and diagnostics</span></summary><pre id="logs"></pre></details>
+    </section>
+</div>
+
+<script>
+const sm = document.getElementById("start_month");
+const em = document.getElementById("end_month");
+
+for (let i = 1; i <= 12; i++) {
+    const m = String(i).padStart(2, "0");
+    sm.innerHTML += `<option value="${i}">${m}</option>`;
+    em.innerHTML += `<option value="${i}">${m}</option>`;
+}
+sm.value = "6";
+em.value = "9";
+
+const form = document.getElementById("jobForm");
+let activeMode = "s1";
+const statusBox = document.getElementById("status");
+const logs = document.getElementById("logs");
+const datesBox = document.getElementById("dates");
+const dateStatus = document.getElementById("dateStatus");
+const previewPanel = document.getElementById("visualizationPanel");
+const previewDate = document.getElementById("previewDate");
+const previewStatus = document.getElementById("previewStatus");
+let previewMap = null;
+let eePreviewLayer = null;
+let baseLayer = null;
+let outputQueue = [];
+let lastPreviewOutput = null;
+const basemaps = {
+    imagery: () => L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {attribution: "Tiles © Esri"}),
+    osm: () => L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {attribution: "© OpenStreetMap contributors"}),
+    topo: () => L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {attribution: "© OpenTopoMap contributors"}),
+    carto: () => L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {attribution: "© OpenStreetMap © CARTO"})
+};
+
+function initPreviewMap() {
+    if (!previewMap) {
+        previewMap = L.map("previewMap", {zoomControl: true}).setView([22.5, 72.0], 8);
+        baseLayer = basemaps[document.getElementById("basemapChoice").value]().addTo(previewMap);
+    }
+    setTimeout(() => previewMap && previewMap.invalidateSize(), 100);
+}
+
+function updatePreviewDates(dates) {
+    const previous = previewDate.value;
+    previewDate.innerHTML = '<option value="">Select a date</option>';
+    dates.forEach(d => {
+        const opt = document.createElement("option");
+        opt.value = d; opt.textContent = d; previewDate.appendChild(opt);
+    });
+    if (dates.includes(previous)) previewDate.value = previous;
+    else if (dates.length) previewDate.value = dates[0];
+}
+
+function basePayload() {
+    return {
+        district_path: document.getElementById("district_path").value,
+        district_field: document.getElementById("district_field").value,
+        district_name: document.getElementById("district_name").value,
+        mask_path: document.getElementById("mask_path").value,
+        output_dir: document.getElementById("output_dir").value,
+        year: Number(document.getElementById("year").value),
+        start_month: Number(sm.value),
+        end_month: Number(em.value),
+        polarization: document.getElementById("polarization").value,
+        orbit: document.getElementById("orbit").value,
+        crs: "EPSG:32642",
+        mode: activeMode,
+        selected_bands: [...document.querySelectorAll(".band-check:checked")].map(c => c.value),
+        selected_indices: [...document.querySelectorAll(".index-check:checked")].map(c => c.value)
+    };
+}
+
+async function refreshCredentialStatus() {
+    const box = document.getElementById("credentialSetup");
+    const message = document.getElementById("credentialMessage");
+    try {
+        const r = await fetch("/credentials/status");
+        const d = await r.json();
+        if (d.configured) {
+            document.getElementById("credentialPath").value = d.path;
+            box.classList.add("credential-ready");
+            message.textContent = d.project_id
+                ? `Key path is configured. Project ID detected automatically: ${d.project_id}. Change the key path below if needed.`
+                : "Key path exists, but a project_id could not be read. Validate a service-account JSON key.";
+        } else {
+            box.classList.remove("credential-ready");
+            message.textContent = "Before using Sentinel-1 or Sentinel-2, select your own service-account JSON key path and validate it. Local Processing works without it.";
+        }
+    } catch (e) { message.textContent = "Could not check credential setup status."; }
+}
+
+document.getElementById("saveCredentialPath").addEventListener("click", async () => {
+    const btn = document.getElementById("saveCredentialPath");
+    const message = document.getElementById("credentialMessage");
+    const path = document.getElementById("credentialPath").value.trim();
+    if (!path) { message.textContent = "Enter the full path to your service-account JSON key."; return; }
+    btn.disabled = true; btn.textContent = "VALIDATING...";
+    try {
+        const r = await fetch("/credentials/configure", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({credential_path:path})});
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || "Could not validate key.");
+        document.getElementById("credentialPath").value = d.path;
+        document.getElementById("credentialSetup").classList.add("credential-ready");
+        message.textContent = `Credentials validated. Project ID detected automatically: ${d.project_id}. ${d.message}`;
+    } catch (e) {
+        document.getElementById("credentialSetup").classList.remove("credential-ready");
+        message.textContent = e.message;
+    } finally { btn.disabled = false; btn.textContent = "VALIDATE & SAVE KEY PATH"; }
+});
+refreshCredentialStatus();
+
+function setMode(mode) {
+    activeMode = mode;
+    const isLocal = mode === "local";
+    const isS2 = mode === "s2";
+    document.getElementById("jobForm").hidden = isLocal;
+    document.getElementById("localProcessingPanel").hidden = !isLocal;
+    document.querySelector(".run-panel").hidden = false;
+    ["tabS1", "tabS2", "tabLocal"].forEach(id => {
+        const active = (id === "tabS1" && mode === "s1") || (id === "tabS2" && mode === "s2") || (id === "tabLocal" && isLocal);
+        document.getElementById(id).classList.toggle("active", active);
+        document.getElementById(id).setAttribute("aria-selected", String(active));
+    });
+    if (isLocal) {
+        document.getElementById("pageTitle").textContent = "Local Raster Processing";
+        document.getElementById("workflowNotice").innerHTML = "<b>LOCAL PROCESSING · NO EARTH ENGINE REQUESTS</b><br>Stack, mosaic, or mask images already downloaded to your computer. Source images are kept unchanged.";
+        return;
+    }
+    document.getElementById("s1Options").hidden = isS2;
+    document.getElementById("s2Options").hidden = !isS2;
+    previewPanel.hidden = false;
+    initPreviewMap();
+    document.getElementById("previewTitle").textContent = isS2 ? "Sentinel-2 FCC Preview" : `Sentinel-1 ${document.getElementById("polarization").value} Preview`;
+    document.getElementById("previewHint").textContent = isS2
+      ? "Fixed false-colour composite (FCC): B8 = Red, B4 = Green, B3 = Blue. These visualization bands are independent of your download-band selection."
+      : `Preview the Sentinel-1 ${document.getElementById("polarization").value} backscatter band in grayscale. Previewing does not change your download settings.`;
+    document.getElementById("pageTitle").textContent = isS2 ? "Sentinel-2 Optical Automation" : `Sentinel-1 ${document.getElementById("polarization").value} Automation`;
+    document.getElementById("workflowNotice").innerHTML = isS2
+      ? "<b>EPSG:32642 • 10 m • Sentinel-2 Optical</b><br>Choose bands and indices first, then load acquisition dates. Each date is mosaicked, exported to GeoTIFF, and agriculture-masked locally."
+      : "<b>EPSG:32642 • 10 m • Sentinel-1 SAR</b><br>Selected dates are downloaded as GeoTIFF tiles, merged locally, agriculture-masked and stacked. No Google Drive required.";
+    datesBox.innerHTML = "";
+    lastPreviewOutput = null;
+    updatePreviewDates([]);
+    previewStatus.textContent = "Load dates and select one date for preview, or select two or more dates above and click MOSAIC SELECTED DATES.";
+    dateStatus.textContent = `Click LOAD DATES to query ${isS2 ? "Sentinel-2" : "Sentinel-1"}.`;
+    logs.textContent = ""; statusBox.textContent = "Ready";
+}
+
+document.getElementById("tabS1").addEventListener("click", () => setMode("s1"));
+document.getElementById("tabS2").addEventListener("click", () => setMode("s2"));
+document.getElementById("tabLocal").addEventListener("click", () => setMode("local"));
+document.getElementById("polarization").addEventListener("change", () => {
+    if (activeMode === "s1") {
+        document.getElementById("pageTitle").textContent = `Sentinel-1 ${document.getElementById("polarization").value} Automation`;
+        document.getElementById("previewTitle").textContent = `Sentinel-1 ${document.getElementById("polarization").value} Preview`;
+        document.getElementById("previewHint").textContent = `Preview the Sentinel-1 ${document.getElementById("polarization").value} backscatter band in grayscale. Previewing does not change your download settings.`;
+    }
+});
+
+document.getElementById("loadDates").addEventListener("click", async () => {
+    const btn = document.getElementById("loadDates");
+    btn.disabled = true;
+    btn.textContent = "LOADING...";
+    if (activeMode === "s2" && !document.querySelector(".band-check:checked") && !document.querySelector(".index-check:checked")) {
+        dateStatus.textContent = "Select at least one Sentinel-2 band or index before loading dates.";
+        btn.disabled = false; btn.textContent = "LOAD DATES"; return;
+    }
+    dateStatus.textContent = `Querying ${activeMode === "s2" ? "Sentinel-2 optical" : "Sentinel-1 SAR"} dates from GEE...`;
+    datesBox.innerHTML = "";
+
+    try {
+        const response = await fetch("/dates", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(basePayload())
+        });
+        const data = await response.json();
+
+        if (!response.ok) throw new Error(data.error || "Could not load dates.");
+
+        data.dates.forEach((d, i) => {
+            const row = document.createElement("label");
+            row.className = "date-row";
+            row.innerHTML = `
+                <input type="checkbox" class="date-check" value="${d}" checked>
+                <span>${String(i + 1).padStart(2, "0")}</span>
+                <b>${d}</b>
+            `;
+            datesBox.appendChild(row);
+        });
+
+        dateStatus.textContent =
+            `${data.dates.length} dates found. Select only the dates you need.`;
+        updatePreviewDates(data.dates);
+    } catch (err) {
+        dateStatus.textContent = "ERROR: " + err.message;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "LOAD DATES";
+    }
+});
+
+document.getElementById("basemapChoice").addEventListener("change", () => {
+    if (!previewMap) return;
+    if (baseLayer) previewMap.removeLayer(baseLayer);
+    baseLayer = basemaps[document.getElementById("basemapChoice").value]().addTo(previewMap);
+    if (eePreviewLayer) eePreviewLayer.bringToFront();
+});
+
+document.getElementById("showPreview").addEventListener("click", async () => {
+    const date = previewDate.value;
+    if (!date) { previewStatus.textContent = "Load dates and select a date first."; return; }
+    const payload = basePayload();
+    previewStatus.textContent = `Requesting Earth Engine ${activeMode === "s2" ? "FCC" : document.getElementById("polarization").value} preview for ${date}...`;
+    const button = document.getElementById("showPreview");
+    button.disabled = true;
+    try {
+        const response = await fetch(`/preview/${encodeURIComponent(date)}`, {
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Preview failed.");
+        initPreviewMap();
+        if (eePreviewLayer) previewMap.removeLayer(eePreviewLayer);
+        eePreviewLayer = L.tileLayer(data.tile_url, {opacity: 1, attribution: activeMode === "s2" ? "Sentinel-2 © Copernicus / ESA" : "Sentinel-1 © Copernicus / ESA"}).addTo(previewMap);
+        previewMap.fitBounds(data.bounds, {padding: [12, 12]});
+        previewStatus.textContent = `${data.date} • ${data.scene_count} scene(s) • ${data.visualization}`;
+        lastPreviewOutput = {kind: "date", dates: [date], label: `${activeMode === "s2" ? "S2" : "S1 " + document.getElementById("polarization").value} ${date}`, mode: activeMode};
+        addLastPreviewToQueue();
+    } catch (err) {
+        previewStatus.textContent = "Preview error: " + err.message;
+    } finally {
+        button.disabled = false;
+    }
+});
+
+
+document.getElementById("showMosaic").addEventListener("click", async () => {
+    const selectedDates = [...document.querySelectorAll(".date-check:checked")].map(c => c.value).sort();
+    if (selectedDates.length < 2) {
+        previewStatus.textContent = "Select at least two dates using the date checkboxes above, then click MOSAIC SELECTED DATES.";
+        return;
+    }
+    const payload = basePayload();
+    payload.selected_dates = selectedDates;
+    const button = document.getElementById("showMosaic");
+    previewStatus.textContent = `Building native GEE mosaic() from ${selectedDates.length} selected dates...`;
+    button.disabled = true;
+    try {
+        const response = await fetch("/preview-mosaic", {
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Mosaic preview failed.");
+        initPreviewMap();
+        if (eePreviewLayer) previewMap.removeLayer(eePreviewLayer);
+        eePreviewLayer = L.tileLayer(data.tile_url, {opacity: 1, attribution: activeMode === "s2" ? "Sentinel-2 © Copernicus / ESA" : "Sentinel-1 © Copernicus / ESA"}).addTo(previewMap);
+        previewMap.fitBounds(data.bounds, {padding: [12, 12]});
+        previewStatus.textContent = `${data.mosaic_method} • ${data.mosaic_dates.join(", ")} • ${data.scene_count} scene(s) • ${data.visualization}. Later acquisition times take priority in overlaps.`;
+        const mosaicLabel = "Mosaic_" + data.mosaic_dates.map(formatDateForFilename).join("_and_");
+        lastPreviewOutput = {kind: "mosaic", dates: data.mosaic_dates, label: mosaicLabel, mode: activeMode};
+        addLastPreviewToQueue();
+    } catch (err) {
+        previewStatus.textContent = "Mosaic preview error: " + err.message;
+    } finally {
+        button.disabled = false;
+    }
+});
+
+function formatDateForFilename(isoDate) {
+    // Convert Earth Engine ISO dates (YYYY-MM-DD) to DD_MM_YYYY for output names.
+    const parts = String(isoDate).split("-");
+    if (parts.length !== 3) return String(isoDate).replace(/[^0-9]/g, "_");
+    return `${parts[2]}_${parts[1]}_${parts[0]}`;
+}
+
+function renderOutputQueue() {
+    const box = document.getElementById("outputQueue");
+    box.innerHTML = "";
+    const queueCount = document.getElementById("queueCount");
+    if (queueCount) queueCount.textContent = `${outputQueue.length} output${outputQueue.length === 1 ? "" : "s"}`;
+    outputQueue.forEach((item, index) => {
+        const row = document.createElement("div");
+        row.className = "output-row";
+        row.innerHTML = `<input type="checkbox" class="output-check" data-output-id="${item.id}" ${item.checked === false ? "" : "checked"} aria-label="Select ${item.label} for download"><div class="output-order"><label for="order_${item.id}">Order</label><input id="order_${item.id}" type="number" class="output-order-input" min="1" max="${outputQueue.length}" step="1" value="${index + 1}" data-output-id="${item.id}" aria-label="Processing order for ${item.label}"></div><div class="output-details"><b>${item.label}</b><small>${item.kind === "mosaic" ? "GEE mosaic()" : "Single date"} · ${item.dates.join(", ")}</small></div><button type="button" class="small remove-output" data-output-id="${item.id}">REMOVE</button>`;
+        box.appendChild(row);
+    });
+    document.getElementById("outputQueueStatus").textContent = outputQueue.length ? `${outputQueue.length} output(s) in list. Set order numbers (1 = first); outputs are displayed vertically in that order. Only checked outputs are downloaded.` : "No outputs added yet.";
+    box.querySelectorAll(".remove-output").forEach(btn => btn.addEventListener("click", e => {
+        e.preventDefault(); outputQueue = outputQueue.filter(x => x.id !== btn.dataset.outputId); renderOutputQueue();
+    }));
+    box.querySelectorAll(".output-order-input").forEach(input => input.addEventListener("change", () => {
+        const targetId = input.dataset.outputId;
+        let requested = Number.parseInt(input.value, 10);
+        if (!Number.isFinite(requested)) requested = outputQueue.findIndex(x => x.id === targetId) + 1;
+        requested = Math.max(1, Math.min(outputQueue.length, requested));
+        const current = outputQueue.findIndex(x => x.id === targetId);
+        const [moved] = outputQueue.splice(current, 1);
+        outputQueue.splice(requested - 1, 0, moved);
+        renderOutputQueue();
+    }));
+    box.querySelectorAll(".output-check").forEach(input => input.addEventListener("change", () => {
+        const item = outputQueue.find(x => x.id === input.dataset.outputId);
+        if (item) item.checked = input.checked;
+    }));
+}
+function addLastPreviewToQueue() {
+    if (!lastPreviewOutput) { document.getElementById("outputQueueStatus").textContent = "Preview a date or create a mosaic first."; return; }
+    const item = {...lastPreviewOutput, checked: true, id: `out_${Date.now()}_${Math.random().toString(36).slice(2,7)}`};
+    outputQueue.push(item); renderOutputQueue();
+}
+document.getElementById("clearOutputQueue").addEventListener("click", () => { outputQueue = []; renderOutputQueue(); });
+
+function syncPreviewDatesToSelection() {
+    const selected = [...document.querySelectorAll(".date-check:checked")].map(c => c.value);
+    updatePreviewDates(selected);
+}
+
+datesBox.addEventListener("change", syncPreviewDatesToSelection);
+
+document.getElementById("selectAll").addEventListener("click", () => {
+    document.querySelectorAll(".date-check").forEach(c => c.checked = true);
+    syncPreviewDatesToSelection();
+});
+
+document.getElementById("clearAll").addEventListener("click", () => {
+    document.querySelectorAll(".date-check").forEach(c => c.checked = false);
+    syncPreviewDatesToSelection();
+});
+
+form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const selectedIds = [...document.querySelectorAll(".output-check:checked")].map(c => c.dataset.outputId);
+    const selectedOutputs = outputQueue.filter(item => selectedIds.includes(item.id) && item.mode === activeMode);
+    if (!selectedOutputs.length) {
+        alert("Check at least one output from the currently selected workflow. Add a previewed date or mosaic if the list is empty.");
+        return;
+    }
+
+    const payload = basePayload();
+    if (activeMode === "s2" && !payload.selected_bands.length && !payload.selected_indices.length) {
+        alert("Select at least one Sentinel-2 band or index."); return;
+    }
+    payload.selected_outputs = selectedOutputs.map(({id,label,kind,dates,mode}) => ({id,label,kind,dates,mode}));
+    payload.selected_dates = [...new Set(selectedOutputs.flatMap(item => item.dates))];
+
+    logs.textContent = "";
+    statusBox.textContent =
+        `Starting download for ${selectedOutputs.length} checked output(s)...`;
+
+    const response = await fetch("/run", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+        statusBox.textContent = "ERROR: " + (data.error || "Could not start job.");
+        return;
+    }
+
+    poll(data.job_id);
+});
+
+async function poll(jobId) {
+    const response = await fetch(`/status/${jobId}`);
+    const data = await response.json();
+
+    const newLogText = (data.logs || []).join("\n");
+    // Do not repaint the log panel when nothing changed. This prevents the
+    // visible blinking/flicker while the backend polls GEE.
+    if (logs.textContent !== newLogText) {
+        logs.textContent = newLogText;
+        logs.scrollTop = logs.scrollHeight;
+    }
+
+    statusBox.textContent = "Status: " + data.status;
+
+    if (data.status === "running" || data.status === "queued") {
+        setTimeout(() => poll(jobId), 5000);
+    } else if (data.status === "completed") {
+        statusBox.textContent = "✓ COMPLETED";
+    } else {
+        statusBox.textContent = "✗ ERROR — see log above";
+        // Keep the complete error log visible. Do not clear or repaint it.
+        logs.scrollTop = logs.scrollHeight;
+    }
+}
+
+
+// Local-only processing tab: scan, order and process existing GeoTIFFs.
+let localFiles = [];
+function renderLocalFiles() {
+    const box = document.getElementById("localFilesList");
+    box.innerHTML = "";
+    localFiles.forEach((item, index) => {
+        const row = document.createElement("div");
+        row.className = "output-row local-file-row";
+        row.innerHTML = `<input type="checkbox" class="local-file-check" data-path-index="${index}" ${item.checked ? "checked" : ""} aria-label="Select ${item.name}"><div class="output-order"><label for="local_order_${index}">Order</label><input id="local_order_${index}" type="number" class="output-order-input local-order-input" min="1" max="${localFiles.length}" step="1" value="${index+1}" data-path-index="${index}"></div><div class="output-details"><b>${item.name}</b><small>${item.size_mb} MB · ${item.path}</small></div>`;
+        box.appendChild(row);
+    });
+    box.querySelectorAll(".local-file-check").forEach(el => el.addEventListener("change", () => { localFiles[Number(el.dataset.pathIndex)].checked = el.checked; }));
+    box.querySelectorAll(".local-order-input").forEach(el => el.addEventListener("change", () => {
+        const from = Number(el.dataset.pathIndex); let to = Number.parseInt(el.value, 10);
+        if (!Number.isFinite(to)) to = from + 1; to = Math.max(1, Math.min(localFiles.length, to));
+        const [item] = localFiles.splice(from, 1); localFiles.splice(to-1, 0, item); renderLocalFiles();
+    }));
+}
+document.getElementById("scanLocalFiles").addEventListener("click", async () => {
+    const folder = document.getElementById("localInputFolder").value.trim();
+    const status = document.getElementById("localFilesStatus");
+    if (!folder) { status.textContent = "Enter the input folder path first."; return; }
+    const btn = document.getElementById("scanLocalFiles"); btn.disabled = true; btn.textContent = "SCANNING...";
+    try {
+        const res = await fetch("/local/files", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({folder, recursive:document.getElementById("localRecursive").checked})});
+        const data = await res.json(); if (!res.ok) throw new Error(data.error || "Could not scan folder.");
+        localFiles = data.files.map(f => ({...f, checked:true})); renderLocalFiles();
+        status.textContent = `${localFiles.length} GeoTIFF(s) found. Set processing order and check only the files you need.`;
+    } catch (err) { status.textContent = "ERROR: " + err.message; }
+    finally { btn.disabled = false; btn.textContent = "SCAN FOLDER"; }
+});
+document.getElementById("selectLocalAll").addEventListener("click", () => { localFiles.forEach(f => f.checked = true); renderLocalFiles(); });
+document.getElementById("clearLocalAll").addEventListener("click", () => { localFiles.forEach(f => f.checked = false); renderLocalFiles(); });
+document.getElementById("localOperation").addEventListener("change", () => {
+    const op = document.getElementById("localOperation").value;
+    document.getElementById("localFilesStatus").textContent = op === "mask" ? "Mask operation accepts one selected image and a mask raster." : op === "mosaic" ? "Mosaic inputs must have the same number of bands; source order controls overlap priority." : "Stack combines all bands in the order shown below.";
+});
+document.getElementById("runLocalProcessing").addEventListener("click", async () => {
+    const selected = localFiles.filter(f => f.checked);
+    const operation = document.getElementById("localOperation").value;
+    const outputDir = document.getElementById("localOutputFolder").value.trim();
+    const maskPath = document.getElementById("localMaskPath").value.trim();
+    if (!selected.length) { alert("Select at least one GeoTIFF."); return; }
+    if (!outputDir) { alert("Enter an output folder."); return; }
+    if (operation === "mask" && (!maskPath || selected.length !== 1)) { alert("Mask operation requires one selected image and a mask GeoTIFF."); return; }
+    const btn = document.getElementById("runLocalProcessing"); btn.disabled = true; btn.textContent = "STARTING...";
+    logs.textContent = ""; statusBox.textContent = "Starting local raster processing...";
+    try {
+        const res = await fetch("/local/run", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({operation, input_paths:selected.map(f=>f.path), output_dir:outputDir, output_name:document.getElementById("localOutputName").value.trim() || "Local_Processed_Output.tif", mask_path:maskPath})});
+        const data = await res.json(); if (!res.ok) throw new Error(data.error || "Could not start local processing.");
+        poll(data.job_id);
+    } catch (err) { statusBox.textContent = "ERROR: " + err.message; }
+    finally { btn.disabled = false; btn.textContent = "RUN LOCAL PROCESSING"; }
+});
+</script>
+</body>
+</html>
